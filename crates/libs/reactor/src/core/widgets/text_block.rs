@@ -1,4 +1,22 @@
 use super::*;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Global UI font scale, in percent (100 = 1.0×, the default = no-op). Every
+/// `TextBlock::font_size` is multiplied by this, so an app can offer a single
+/// accessibility "text size" control that scales ALL text — `body()`/`caption()`
+/// and explicit sizes alike — with no per-call-site changes.
+pub static FONT_SCALE_PERCENT: AtomicU32 = AtomicU32::new(100);
+
+/// Set the global UI font scale (percent, clamped to 50..=300). Takes effect for
+/// text built on the next render.
+pub fn set_font_scale_percent(pct: u32) {
+    FONT_SCALE_PERCENT.store(pct.clamp(50, 300), Ordering::Relaxed);
+}
+
+#[inline]
+fn font_scale() -> f64 {
+    FONT_SCALE_PERCENT.load(Ordering::Relaxed) as f64 / 100.0
+}
 
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct TextBlock {
@@ -63,7 +81,7 @@ impl TextBlock {
     }
 
     pub fn font_size(mut self, v: f64) -> Self {
-        self.font_size = Some(v);
+        self.font_size = Some(v * font_scale());
         self
     }
 
