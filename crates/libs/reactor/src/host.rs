@@ -216,27 +216,34 @@ impl ReactorHost {
                         let _ = state.window.SetContent(&ui_element);
                         last_attached_for_hook.set(Some(rid));
 
-                        if !subscribed.get() {
-                            subscribed.set(true);
-                            ROOT_WINDOW
-                                .with(|cell| *cell.borrow_mut() = Some(state.window.clone()));
-                            if let Ok(fe) = ui_element.cast::<FrameworkElement>() {
+                        ROOT_WINDOW.with(|cell| *cell.borrow_mut() = Some(state.window.clone()));
+                        if let Ok(fe) = ui_element.cast::<FrameworkElement>() {
+                            // (Re)subscribe size + DPI to the CURRENT root on EVERY
+                            // root change. The render root swaps when the app gates
+                            // auth (sign-in screen ↔ main shell); the old one-time
+                            // guard left SizeChanged bound to the first, now-detached
+                            // root, so `use_inner_size` froze at that root's mount size
+                            // and the UI never reflowed on resize after sign-in. Root
+                            // swaps are rare (a handful per session), so the stale
+                            // subscriptions left on dead elements are harmless.
+                            subscribe_size_and_dpi(
+                                &fe,
+                                state.render_host.clone_inner(),
+                                state.window.clone(),
+                                constraints,
+                            );
+                            ROOT_FRAMEWORK_ELEMENT
+                                .with(|cell| *cell.borrow_mut() = Some(fe.clone()));
+
+                            // One-time: theme-change subscription + any theme
+                            // requested before the root element existed (e.g. from a
+                            // first-mount use_effect).
+                            if !subscribed.get() {
+                                subscribed.set(true);
                                 subscribe_actual_theme_changed(
                                     &fe,
                                     state.render_host.clone_inner(),
                                 );
-                                subscribe_size_and_dpi(
-                                    &fe,
-                                    state.render_host.clone_inner(),
-                                    state.window.clone(),
-                                    constraints,
-                                );
-                                ROOT_FRAMEWORK_ELEMENT
-                                    .with(|cell| *cell.borrow_mut() = Some(fe.clone()));
-
-                                // Apply any theme that was requested before the
-                                // root element existed (e.g. from a first-mount
-                                // use_effect).
                                 if let Some(theme) = PENDING_THEME.with(|p| p.take()) {
                                     let _ = fe.SetRequestedTheme(theme);
                                     update_titlebar_theme();
