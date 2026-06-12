@@ -2,6 +2,7 @@ use std::any::Any;
 use std::cell::{Cell, Ref, RefCell};
 use std::fmt;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 
@@ -137,6 +138,10 @@ impl<A: 'static> From<Dispatch<A>> for super::callback::Callback<A> {
 /// request back onto the UI thread via the host's [`UiMarshaller`].
 pub struct AsyncSetState<T: Send + 'static> {
     cell: Arc<Mutex<Box<dyn Any + Send>>>,
+    /// The owning component's dirty flag. Set after a marshalled write so the
+    /// reconciler's `force_dirty_subtrees()` re-renders this component; without
+    /// it an async result under a structurally-stable ancestor never paints.
+    dirty: Arc<AtomicBool>,
     marshaller: UiMarshaller,
     type_name: &'static str,
     _marker: std::marker::PhantomData<fn(T)>,
@@ -146,6 +151,7 @@ impl<T: Send + 'static> Clone for AsyncSetState<T> {
     fn clone(&self) -> Self {
         Self {
             cell: Arc::clone(&self.cell),
+            dirty: Arc::clone(&self.dirty),
             marshaller: self.marshaller.clone(),
             type_name: self.type_name,
             _marker: std::marker::PhantomData,
@@ -166,6 +172,7 @@ impl<T: Send + Clone + PartialEq + 'static> AsyncSetState<T> {
     /// marshalled to the UI thread; no-op if value is unchanged.
     pub fn call(&self, value: T) {
         let cell = Arc::clone(&self.cell);
+        let dirty = Arc::clone(&self.dirty);
         let type_name = self.type_name;
         self.marshaller.dispatch(move || {
             let mut slot = cell.lock().unwrap();
@@ -180,6 +187,10 @@ impl<T: Send + Clone + PartialEq + 'static> AsyncSetState<T> {
             }
             *slot = Box::new(value);
             drop(slot);
+            // Mark the owning component dirty (runs on the UI thread, before the
+            // render request) so `force_dirty_subtrees()` reaches and re-renders
+            // it even under a structurally-stable ancestor.
+            dirty.store(true, Ordering::Release);
             request_ui_rerender_on_ui_thread();
         });
     }
@@ -253,10 +264,12 @@ pub struct RenderCx {
     hooks: Rc<RefCell<Vec<HookSlot>>>,
     cursor: usize,
     request_rerender: Rc<dyn Fn()>,
-    /// Shared flag set by `SetState` when a value changes; the reconciler
-    /// checks this to force re-render of the owning component even when the
-    /// parent's element tree is structurally identical.
-    state_dirty: Rc<Cell<bool>>,
+    /// Shared flag set by `SetState` (and `AsyncSetState`) when a value
+    /// changes; the reconciler checks this to force re-render of the owning
+    /// component even when the parent's element tree is structurally identical.
+    /// `Arc<AtomicBool>` (not `Rc<Cell<_>>`) so an off-thread async write can
+    /// mark its component dirty after marshalling back to the UI thread.
+    state_dirty: Arc<AtomicBool>,
     ui_thread: Option<ThreadId>,
     context_stack: Option<Rc<ContextStack>>,
     read_contexts: RefCell<FxHashSet<ContextId>>,
@@ -288,7 +301,7 @@ impl RenderCx {
             hooks: Rc::new(RefCell::new(Vec::new())),
             cursor: 0,
             request_rerender,
-            state_dirty: Rc::new(Cell::new(false)),
+            state_dirty: Arc::new(AtomicBool::new(false)),
             ui_thread: None,
             context_stack: None,
             read_contexts: RefCell::new(FxHashSet::default()),
@@ -327,7 +340,7 @@ impl RenderCx {
         self.cursor = 0;
         self.ui_thread = Some(thread::current().id());
         self.read_contexts.borrow_mut().clear();
-        self.state_dirty.set(false);
+        self.state_dirty.store(false, Ordering::Release);
     }
 
     pub fn hook_count(&self) -> usize {
@@ -341,12 +354,12 @@ impl RenderCx {
     /// Returns `true` if any `SetState` called since the last render changed
     /// a hook value, and clears the flag.
     pub fn take_state_dirty(&self) -> bool {
-        self.state_dirty.replace(false)
+        self.state_dirty.swap(false, Ordering::AcqRel)
     }
 
     /// Returns the current dirty state without clearing it.
     pub fn peek_state_dirty(&self) -> bool {
-        self.state_dirty.get()
+        self.state_dirty.load(Ordering::Acquire)
     }
 
     /// Install (or replace) the [`UiMarshaller`] used by
@@ -414,6 +427,7 @@ impl RenderCx {
 
         let setter = AsyncSetState::<T> {
             cell,
+            dirty: Arc::clone(&self.state_dirty),
             marshaller,
             type_name,
             _marker: std::marker::PhantomData,
@@ -750,7 +764,7 @@ impl RenderCx {
         T: 'static + Clone + PartialEq,
     {
         let request = Rc::clone(&self.request_rerender);
-        let dirty = Rc::clone(&self.state_dirty);
+        let dirty = Arc::clone(&self.state_dirty);
         let ui_thread = self.ui_thread;
         SetState {
             inner: Rc::new(move |value: T| {
@@ -772,7 +786,7 @@ impl RenderCx {
                 }
                 *slot = Box::new(value);
                 drop(slot);
-                dirty.set(true);
+                dirty.store(true, Ordering::Release);
                 request();
             }),
         }
@@ -783,7 +797,7 @@ impl RenderCx {
         T: 'static + Clone + PartialEq,
     {
         let request = Rc::clone(&self.request_rerender);
-        let dirty = Rc::clone(&self.state_dirty);
+        let dirty = Arc::clone(&self.state_dirty);
         let ui_thread = self.ui_thread;
         Updater {
             inner: Rc::new(move |reducer: ReducerClosure<T>| {
@@ -806,7 +820,7 @@ impl RenderCx {
                     return;
                 }
                 *cell.borrow_mut() = Box::new(next);
-                dirty.set(true);
+                dirty.store(true, Ordering::Release);
                 request();
             }),
         }
@@ -824,7 +838,7 @@ impl RenderCx {
         R: Fn(S, A) -> S + 'static,
     {
         let request = Rc::clone(&self.request_rerender);
-        let dirty = Rc::clone(&self.state_dirty);
+        let dirty = Arc::clone(&self.state_dirty);
         let ui_thread = self.ui_thread;
         let reducer = Rc::new(reducer);
         Dispatch {
@@ -847,7 +861,7 @@ impl RenderCx {
                     return;
                 }
                 *cell.borrow_mut() = Box::new(next);
-                dirty.set(true);
+                dirty.store(true, Ordering::Release);
                 request();
             }),
         }

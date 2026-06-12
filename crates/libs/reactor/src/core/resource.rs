@@ -218,10 +218,23 @@ impl RenderCx {
 
         let deps_clone = deps.clone();
         let gen_handle = generation;
+        // Snapshot the current value so a refetch can keep prior data on screen
+        // (stale-while-revalidate) instead of flashing the loading element.
+        let prev_state = state.clone();
         self.use_effect(deps, move || {
             let my_gen = gen_handle.borrow().advance();
             let set_state2 = set_state.clone();
-            set_state.call(Resource::Loading);
+            // On a refetch (deps changed while data exists) emit `Reloading(prev)`
+            // rather than `Loading`, so `view()` keeps rendering the same element
+            // kind and the reconciler diffs in place. Emitting `Loading` here drops
+            // the data, and a `.loading(..)` override is a different element kind,
+            // so the control (e.g. a virtualized list) gets unmounted/remounted
+            // and scroll resets — visible as a flash on every timer-driven refetch.
+            let pending = match prev_state {
+                Resource::Ready(d) | Resource::Reloading(d) => Resource::Reloading(d),
+                _ => Resource::Loading,
+            };
+            set_state.call(pending);
 
             let fetcher_deps = deps_clone.clone();
             let gen_for_thread = gen_handle.get_cloned();

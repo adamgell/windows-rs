@@ -377,6 +377,11 @@ fn render_once<B: Backend + 'static, D: Dispatcher + 'static>(inner: &Rc<RenderH
     let (new_root_id, last_diffed, last_skipped, last_created) = {
         let mut reconciler = inner.reconciler.borrow_mut();
         reconciler.reset_stats();
+        // A component whose own state is dirty can be pruned by `update`'s
+        // skip-on-structural-equality when it sits under a structurally-stable
+        // ancestor. Force a full descent for this pass so the dirty component is
+        // reached; only components with set dirty flags actually re-render.
+        reconciler.force_dirty_subtrees();
 
         let existing = inner.root_id.get();
         let weak = Rc::downgrade(inner);

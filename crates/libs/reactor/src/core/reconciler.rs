@@ -11,6 +11,9 @@ mod templated;
 mod widget_dispatch;
 mod wrappers;
 
+#[cfg(test)]
+mod force_dirty_tests;
+
 pub(crate) use self::templated::TemplatedListState;
 pub use self::templated::{new_realization_queue, RealizationQueue, RealizationRequest};
 
@@ -783,6 +786,27 @@ impl<B: Backend + 'static> Reconciler<B> {
     pub(crate) fn clear_forced_component_rerender(&mut self) {
         self.force_component_rerender = false;
         self.forced_components.clear();
+    }
+
+    /// If any mounted component instance has pending dirty state, disable
+    /// skip-on-structural-equality for this reconcile pass.
+    ///
+    /// `update()`'s `can_skip_update` prunes an entire subtree the moment an
+    /// ancestor element compares equal, and only consults the dirty flag of the
+    /// exact node it is visiting (`is_component_state_dirty`). A dirty component
+    /// nested under a structurally-stable ancestor (e.g. a state-driven child of
+    /// a static StackPanel) is therefore pruned before its own dirty flag is
+    /// ever checked, and never re-renders. Forcing a full descent for the pass
+    /// guarantees the dirty component is reached; `update_component` then
+    /// re-renders only the components whose `take_state_dirty()` is set.
+    pub(crate) fn force_dirty_subtrees(&mut self) {
+        if self
+            .component_instances
+            .values()
+            .any(|inst| inst.render_cx.peek_state_dirty())
+        {
+            self.force_component_rerender = true;
+        }
     }
 }
 
