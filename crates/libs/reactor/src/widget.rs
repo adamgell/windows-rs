@@ -313,6 +313,15 @@ pub struct TemplatedListElement {
     pub can_drag_items: bool,
     pub can_reorder_items: bool,
     pub allow_drop: bool,
+    /// A one-shot "scroll request": when this value *changes* between renders,
+    /// the reconciler scrolls the given item index into view (via
+    /// `ListViewBase::ScrollIntoView`). `None` / negative = no request. Used for
+    /// find-next centring and jump-to-line.
+    pub scroll_to: Option<i32>,
+    /// Live-tail "stick to bottom": when `true`, the reconciler auto-scrolls to
+    /// the last item whenever the item count grows. An explicit `scroll_to`
+    /// change takes precedence over this in the same render.
+    pub follow_tail: bool,
     pub modifiers: Modifiers,
     pub items_impl: Rc<dyn TemplatedListImpl>,
 }
@@ -326,6 +335,8 @@ impl Clone for TemplatedListElement {
             can_drag_items: self.can_drag_items,
             can_reorder_items: self.can_reorder_items,
             allow_drop: self.allow_drop,
+            scroll_to: self.scroll_to,
+            follow_tail: self.follow_tail,
             modifiers: self.modifiers.clone(),
             items_impl: Rc::clone(&self.items_impl),
         }
@@ -350,6 +361,8 @@ impl PartialEq for TemplatedListElement {
             && self.can_drag_items == other.can_drag_items
             && self.can_reorder_items == other.can_reorder_items
             && self.allow_drop == other.allow_drop
+            && self.scroll_to == other.scroll_to
+            && self.follow_tail == other.follow_tail
             && self.modifiers == other.modifiers
             && Rc::ptr_eq(&self.items_impl, &other.items_impl)
     }
@@ -419,6 +432,8 @@ pub struct TemplatedListBuilder<T: 'static> {
     can_drag_items: bool,
     can_reorder_items: bool,
     allow_drop: bool,
+    scroll_to: Option<i32>,
+    follow_tail: bool,
     modifiers: Modifiers,
     element_key: Option<String>,
 }
@@ -440,6 +455,8 @@ impl<T: 'static> TemplatedListBuilder<T> {
             can_drag_items: false,
             can_reorder_items: false,
             allow_drop: false,
+            scroll_to: None,
+            follow_tail: false,
             modifiers: Modifiers::default(),
             element_key: None,
         }
@@ -480,6 +497,23 @@ impl<T: 'static> TemplatedListBuilder<T> {
         self
     }
 
+    /// Request that the given item index be scrolled into view. The scroll fires
+    /// only when this value *changes* between renders (a one-shot request), so
+    /// pass a fresh index to re-trigger. `None` / negative = no request. Ideal
+    /// for find-next centring and jump-to-line.
+    pub fn scroll_to(mut self, index: Option<i32>) -> Self {
+        self.scroll_to = index;
+        self
+    }
+
+    /// Stick the list to the bottom: auto-scroll to the last item whenever the
+    /// item count grows (live-tail follow). An explicit [`scroll_to`] change in
+    /// the same render wins over this.
+    pub fn follow_tail(mut self, on: bool) -> Self {
+        self.follow_tail = on;
+        self
+    }
+
     pub fn with_key(mut self, k: impl Into<String>) -> Self {
         self.element_key = Some(k.into());
         self
@@ -510,6 +544,8 @@ impl<T: 'static> TemplatedListBuilder<T> {
             can_drag_items: self.can_drag_items,
             can_reorder_items: self.can_reorder_items,
             allow_drop: self.allow_drop,
+            scroll_to: self.scroll_to,
+            follow_tail: self.follow_tail,
             modifiers: self.modifiers,
             items_impl: Rc::new(cell),
         })

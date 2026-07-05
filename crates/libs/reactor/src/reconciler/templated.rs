@@ -101,6 +101,16 @@ impl<B: Backend + 'static> Reconciler<B> {
             }
         }
 
+        // Initial programmatic scroll. At mount there is no prior `scroll_to` to
+        // diff against, so follow-tail wins; a bare `scroll_to` at mount honours
+        // the requested index. `scroll_templated_to_index` ignores negatives.
+        if tl.follow_tail && count > 0 {
+            self.backend
+                .scroll_templated_to_index(id, (count - 1) as i32);
+        } else if let Some(idx) = tl.scroll_to {
+            self.backend.scroll_templated_to_index(id, idx);
+        }
+
         id
     }
 
@@ -165,6 +175,18 @@ impl<B: Backend + 'static> Reconciler<B> {
                 self.unmount(cid);
             }
             self.backend.set_templated_item_count(id, new_count);
+        }
+
+        // Programmatic scroll: an explicit `scroll_to` change wins (find-next /
+        // jump-to-line); otherwise, if following the tail and the list grew,
+        // stick to the bottom.
+        if new.scroll_to != old.scroll_to {
+            if let Some(idx) = new.scroll_to {
+                self.backend.scroll_templated_to_index(id, idx);
+            }
+        } else if new.follow_tail && new_count > old_count && new_count > 0 {
+            self.backend
+                .scroll_templated_to_index(id, (new_count - 1) as i32);
         }
 
         if !old.same_items_as(new) {
