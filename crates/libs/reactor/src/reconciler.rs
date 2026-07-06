@@ -813,6 +813,27 @@ impl<B: Backend + 'static> Reconciler<B> {
         }
     }
 
+    /// If any mounted component instance has pending dirty state, disable
+    /// skip-on-structural-equality for this reconcile pass.
+    ///
+    /// `is_component_state_dirty` is only consulted for the exact node the
+    /// reconciler is visiting, but `update`'s `can_skip_update` prunes an entire
+    /// subtree the moment a structurally-stable ancestor compares equal — so a
+    /// dirty component nested under such an ancestor (e.g. a screen under a
+    /// stable NavigationView shell) is pruned before its own dirty flag is ever
+    /// checked, and never re-renders. Forcing a full descent for the pass
+    /// guarantees the dirty component is reached; `update_component` then
+    /// re-renders only the components whose `take_state_dirty()` is set.
+    pub(crate) fn force_dirty_subtrees(&mut self) {
+        if self
+            .component_instances
+            .values()
+            .any(|inst| inst.render_cx.peek_state_dirty())
+        {
+            self.force_component_rerender = true;
+        }
+    }
+
     pub fn clear_forced_component_rerender(&mut self) {
         self.force_component_rerender = false;
         self.forced_components.clear();
