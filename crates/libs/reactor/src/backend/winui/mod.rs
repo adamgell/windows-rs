@@ -1194,6 +1194,16 @@ impl Backend for WinUIBackend {
                     }
                     Ok(())
                 }
+                (Prop::StyleVariant, PropValue::Unset, Handle::Button(b)) => {
+                    // A button reverting to the default style emits StyleVariant=Unset,
+                    // because `Button::bindings` only emits the prop for non-default
+                    // styles. Without this arm the accent/subtle Style is never cleared,
+                    // so a toggle button stays visually "stuck on" after its state has
+                    // already flipped back off.
+                    let fe = b.cast::<bindings::IFrameworkElement>()?;
+                    fe.SetStyle(None)?;
+                    Ok(())
+                }
                 (Prop::Value, PropValue::Str(s), Handle::TextBox(t)) => {
                     if t.Text().ok().as_deref() == Some(s.as_str()) {
                         return Ok(());
