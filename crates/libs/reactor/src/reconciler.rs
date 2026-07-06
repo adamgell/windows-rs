@@ -824,7 +824,7 @@ impl<B: Backend + 'static> Reconciler<B> {
     /// checked, and never re-renders. Forcing a full descent for the pass
     /// guarantees the dirty component is reached; `update_component` then
     /// re-renders only the components whose `take_state_dirty()` is set.
-    pub(crate) fn force_dirty_subtrees(&mut self) {
+    pub fn force_dirty_subtrees(&mut self) {
         if self
             .component_instances
             .values()
