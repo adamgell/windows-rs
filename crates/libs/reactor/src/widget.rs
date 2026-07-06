@@ -322,6 +322,12 @@ pub struct TemplatedListElement {
     /// the last item whenever the item count grows. An explicit `scroll_to`
     /// change takes precedence over this in the same render.
     pub follow_tail: bool,
+    /// Monotonic scroll-request generation. The reconciler scrolls `scroll_to`
+    /// into view whenever THIS value changes between renders — so a caller bumps
+    /// it to re-issue a jump even when the target index is unchanged (re-centre),
+    /// and organic index drift (tail growth / truncation) that changes `scroll_to`
+    /// but not `scroll_gen` does NOT scroll. Pair with `scroll_to`.
+    pub scroll_gen: u64,
     pub modifiers: Modifiers,
     pub items_impl: Rc<dyn TemplatedListImpl>,
 }
@@ -337,6 +343,7 @@ impl Clone for TemplatedListElement {
             allow_drop: self.allow_drop,
             scroll_to: self.scroll_to,
             follow_tail: self.follow_tail,
+            scroll_gen: self.scroll_gen,
             modifiers: self.modifiers.clone(),
             items_impl: Rc::clone(&self.items_impl),
         }
@@ -363,6 +370,7 @@ impl PartialEq for TemplatedListElement {
             && self.allow_drop == other.allow_drop
             && self.scroll_to == other.scroll_to
             && self.follow_tail == other.follow_tail
+            && self.scroll_gen == other.scroll_gen
             && self.modifiers == other.modifiers
             && Rc::ptr_eq(&self.items_impl, &other.items_impl)
     }
@@ -434,6 +442,7 @@ pub struct TemplatedListBuilder<T: 'static> {
     allow_drop: bool,
     scroll_to: Option<i32>,
     follow_tail: bool,
+    scroll_gen: u64,
     modifiers: Modifiers,
     element_key: Option<String>,
 }
@@ -457,6 +466,7 @@ impl<T: 'static> TemplatedListBuilder<T> {
             allow_drop: false,
             scroll_to: None,
             follow_tail: false,
+            scroll_gen: 0,
             modifiers: Modifiers::default(),
             element_key: None,
         }
@@ -507,10 +517,19 @@ impl<T: 'static> TemplatedListBuilder<T> {
     }
 
     /// Stick the list to the bottom: auto-scroll to the last item whenever the
-    /// item count grows (live-tail follow). An explicit [`scroll_to`] change in
-    /// the same render wins over this.
+    /// item count grows (live-tail follow). An explicit scroll (a [`scroll_gen`]
+    /// bump) in the same render wins over this.
     pub fn follow_tail(mut self, on: bool) -> Self {
         self.follow_tail = on;
+        self
+    }
+
+    /// Scroll-request generation: bump this (monotonically) to re-issue a scroll
+    /// to the current [`scroll_to`] index, even if the index itself is unchanged
+    /// (idempotent re-centre). The scroll fires only when this value changes, so
+    /// index drift from tail growth/truncation never scrolls on its own.
+    pub fn scroll_gen(mut self, generation: u64) -> Self {
+        self.scroll_gen = generation;
         self
     }
 
@@ -546,6 +565,7 @@ impl<T: 'static> TemplatedListBuilder<T> {
             allow_drop: self.allow_drop,
             scroll_to: self.scroll_to,
             follow_tail: self.follow_tail,
+            scroll_gen: self.scroll_gen,
             modifiers: self.modifiers,
             items_impl: Rc::new(cell),
         })

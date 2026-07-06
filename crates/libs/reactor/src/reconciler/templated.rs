@@ -177,10 +177,12 @@ impl<B: Backend + 'static> Reconciler<B> {
             self.backend.set_templated_item_count(id, new_count);
         }
 
-        // Programmatic scroll: an explicit `scroll_to` change wins (find-next /
-        // jump-to-line); otherwise, if following the tail and the list grew,
-        // stick to the bottom.
-        if new.scroll_to != old.scroll_to {
+        // Programmatic scroll: an explicit jump (a `scroll_gen` bump) wins
+        // (find-next / jump-to-line / re-centre); otherwise, if following the tail
+        // and the list grew, stick to the bottom. Gating on `scroll_gen` (not the
+        // raw `scroll_to` index) means index drift from tail growth/truncation
+        // never scrolls on its own, and re-issuing the same index still fires.
+        if new.scroll_gen != old.scroll_gen {
             if let Some(idx) = new.scroll_to {
                 self.backend.scroll_templated_to_index(id, idx);
             }
